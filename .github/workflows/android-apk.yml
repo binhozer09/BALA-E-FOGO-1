@@ -1,0 +1,115 @@
+name: BALA E FOGO 1 - Unity Personal Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Assets/Editor/AndroidBuildCI.cs'
+      - '.github/workflows/android-apk.yml'
+      - 'Assets/**'
+      - 'Packages/**'
+      - 'ProjectSettings/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    name: Ativar Unity Personal e compilar APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      UNITY_NO_CLI_INVOKED_TELEMETRY: '1'
+      UNITY_NO_CRASH_REPORT: '1'
+      UNITY_NO_UPDATE_CHECK: '1'
+      UNITY_NO_CONSENT_PROMPT: '1'
+
+    steps:
+      - name: Baixar projeto
+        uses: actions/checkout@v4
+
+      - name: Instalar dependências do Unity
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglu1-mesa libgl1 libgconf-2-4 unzip
+
+      - name: Instalar Unity CLI oficial
+        run: |
+          curl -fsSL https://unity.com/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Desativar análise de uso da Unity CLI
+        run: |
+          unity analytics opt-out
+          unity analytics status
+
+      - name: Entrar na conta Unity pelo link seguro
+        run: |
+          echo "Abra o link temporário exibido neste passo e autorize sua conta Unity."
+          timeout 10m unity auth login
+          unity auth status
+
+      - name: Ativar licença gratuita Unity Personal
+        run: |
+          unity license activate --personal --accept-eula --non-interactive
+          unity license status
+          test -s "$HOME/.config/unity3d/Unity/licenses/UnityEntitlementLicense.xml"
+
+      - name: Instalar Unity 2018.4.11f1 com suporte Android
+        run: |
+          unity install 2018.4.11f1 --changeset 7098af2f11ea -m android --cm --accept-eula
+          unity editors --installed
+          EDITOR_PATH="$(find "$HOME" -type f -path '*/2018.4.11f1/Editor/Unity' -print -quit 2>/dev/null)"
+          if [ -z "$EDITOR_PATH" ]; then
+            echo "Não encontrei o Unity Editor 2018.4.11f1."
+            find "$HOME" -maxdepth 9 -type f -name Unity -print 2>/dev/null | head -50
+            exit 1
+          fi
+          echo "UNITY_EDITOR_PATH=$EDITOR_PATH" >> "$GITHUB_ENV"
+
+      - name: Compilar APK Android
+        shell: bash
+        run: |
+          set -o pipefail
+          "$UNITY_EDITOR_PATH" \
+            -batchmode \
+            -nographics \
+            -accept-apiupdate \
+            -projectPath "$GITHUB_WORKSPACE" \
+            -executeMethod BalaEFogo.Editor.AndroidBuildCI.Build \
+            -logFile "$GITHUB_WORKSPACE/unity-build.log" \
+            -quit
+
+      - name: Diagnosticar falha do Unity
+        if: failure()
+        shell: bash
+        run: |
+          if [ -f unity-build.log ]; then
+            grep -n -E -i "error|exception|failed|failure|crash|fatal|BALA_E_FOGO_BUILD_" unity-build.log | tail -250 || true
+            tail -200 unity-build.log
+          fi
+          for LOG in "$HOME/.config/unity3d/Unity/Unity.Licensing.Client.log" "$HOME/.config/unity3d/Unity/Unity.Entitlements.Audit.log"; do
+            if [ -f "$LOG" ]; then
+              echo "===== $LOG ====="
+              tail -100 "$LOG"
+            fi
+          done
+
+      - name: Validar APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="Build/Android/BALA-E-FOGO-1.apk"
+          test -s "$APK"
+          file "$APK"
+          unzip -t "$APK" >/dev/null
+          echo "APK válido: $(du -h "$APK" | cut -f1)"
+
+      - name: Publicar APK para download
+        uses: actions/upload-artifact@v4
+        with:
+          name: BALA-E-FOGO-1-Android-APK
+          path: Build/Android/BALA-E-FOGO-1.apk
+          if-no-files-found: error
+          retention-days: 14
